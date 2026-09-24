@@ -55,15 +55,15 @@ Le V2 Pro a été la première cible (imprimante thermique intégrée 58 mm).
 
 ### Senraise H10
 
-Détection automatique des modèles **H10, H10C, H10S et H10P**, avec impression via le plugin
-Flutter `senraise_printer`.
+Détection automatique des modèles **H10, H10C, H10S et H10P**, avec impression via le service
+Android de Senraise (`recieptservice`), appelé directement depuis `MainActivity.kt`.
 
 - Le H10S et le H10P disposent d'une imprimante thermique intégrée 58 mm.
 - Les anciennes variantes ou les modèles OEM peuvent avoir un firmware ou un SDK différent :
   dans ce cas, FSS-CALCUL bascule sur l'impression Android de secours.
-- Le plugin `senraise_printer` n'est pas publié par Senraise (éditeur non vérifié) : à tester
-  sur un vrai terminal avant livraison. En cas d'échec, demander le SDK officiel au support
-  Senraise.
+- L'interface du service vient d'un projet communautaire (licence BSD-3), pas de Senraise :
+  à tester sur un vrai terminal avant livraison. En cas d'échec, demander le SDK officiel au
+  support Senraise.
 
 ## Paramètres
 

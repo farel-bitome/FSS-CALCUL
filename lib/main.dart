@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:senraise_printer/senraise_printer.dart';
 
 void main() => runApp(const FssCalculApp());
 
@@ -67,17 +66,12 @@ String symboleDevise(String code)=>devisesDisponibles[code]??code;
 
 class PrinterService {
   static const _channel=MethodChannel('fss_calcul/printer');
-  static final SenraisePrinter _senraise=SenraisePrinter();
   static Future<String> deviceInfo() async =>
       await _channel.invokeMethod<String>('deviceInfo')??'Android';
 
   /// [devise] = symbole affiché (ex. FCFA).
   static Future<String> printTicket(Ticket ticket,String devise,AppCompany company) async {
-    final info=await deviceInfo();
-    if (_isH10(info)) {
-      try { await _printH10(ticket,devise,company); return 'Ticket imprimé sur Senraise H10.'; }
-      catch (_) { /* service Senraise absent : impression Android de secours */ }
-    }
+    // SUNMI, Senraise H10 et secours Android sont gérés côté natif (MainActivity.kt)
     return await _channel.invokeMethod<String>('printTicket',{
       'ticket':ticket.numero,'date':_date(ticket.date),'devise':devise,'total':ticket.total,
       'articles':ticket.articles.map((a)=>{'designation':a.designation,'quantite':a.quantite,
@@ -91,32 +85,6 @@ class PrinterService {
     return b.toString();
   }
 
-  static bool _isH10(String info) {
-    final v=info.toUpperCase();
-    return v.contains('SENRAISE') && v.contains('H10');
-  }
-  static Future<void> _printH10(Ticket t,String devise,AppCompany c) async {
-    await _senraise.setAlignment(1); await _senraise.setTextBold(true); await _senraise.setTextSize(28);
-    await _senraise.printText('${c.nom.isEmpty?'FSS-CALCUL':c.nom}\n');
-    await _senraise.setTextBold(false); await _senraise.setTextSize(20);
-    if(c.adresse.isNotEmpty) await _senraise.printText('${c.adresse}\n');
-    if(c.telephone.isNotEmpty) await _senraise.printText('${c.telephone}\n');
-    if(c.email.isNotEmpty) await _senraise.printText('${c.email}\n');
-    if(c.siteWeb.isNotEmpty) await _senraise.printText('${c.siteWeb}\n');
-    if(c.identifiantFiscal.isNotEmpty) await _senraise.printText('NIF : ${c.identifiantFiscal}\n');
-    if(c.registreCommerce.isNotEmpty) await _senraise.printText('RCCM : ${c.registreCommerce}\n');
-    await _senraise.setAlignment(0);
-    await _senraise.printText('Ticket #${t.numero}\n${_date(t.date)}\n--------------------------------\n');
-    for(final a in t.articles) {
-      await _senraise.printText('${a.designation}\n');
-      await _senraise.printText('  ${a.quantite} x ${_fmt(a.prix)} = ${_fmt(a.sousTotal)} $devise\n');
-    }
-    await _senraise.printText('--------------------------------\n');
-    await _senraise.setAlignment(2); await _senraise.setTextBold(true); await _senraise.setTextSize(28);
-    await _senraise.printText('TOTAL : ${_fmt(t.total)} $devise\n');
-    await _senraise.setTextBold(false); await _senraise.setAlignment(1); await _senraise.setTextSize(20);
-    await _senraise.printText('${c.piedTicket.isEmpty?'Merci pour votre confiance':c.piedTicket}\n'); await _senraise.nextLine(3);
-  }
   static String _date(DateTime d) =>
       '${d.day.toString().padLeft(2,'0')}/${d.month.toString().padLeft(2,'0')}/${d.year} '
       '${d.hour.toString().padLeft(2,'0')}:${d.minute.toString().padLeft(2,'0')}';

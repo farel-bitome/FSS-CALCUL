@@ -1,6 +1,10 @@
 package com.fsscalcul
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.IBinder
 import android.os.Build
 import android.print.PrintAttributes
 import android.print.PrintManager
@@ -12,13 +16,14 @@ import com.sunmi.peripheral.printer.SunmiPrinterService
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import recieptservice.com.recieptservice.PrinterInterface
 
 /**
  * Pont d'impression FSS-CALCUL.
  *
  * Ordre : imprimante intégrée SUNMI (bibliothèque officielle com.sunmi:printerlibrary)
- * puis, si elle est absente ou en échec, système d'impression Android.
- * Les terminaux Senraise H10 sont gérés côté Dart (plugin senraise_printer).
+ * ou Senraise H10 (service recieptservice), puis, si elle est absente ou en échec,
+ * système d'impression Android.
  */
 class MainActivity : FlutterActivity() {
     private val channel = "fss_calcul/printer"
@@ -55,6 +60,8 @@ class MainActivity : FlutterActivity() {
                         )
                         if (isSunmiDevice()) {
                             printViaSunmi(t, result)
+                        } else if (isSenraiseDevice()) {
+                            printViaSenraise(t, result)
                         } else {
                             printViaAndroidFramework(t, result)
                         }
@@ -68,6 +75,11 @@ class MainActivity : FlutterActivity() {
     private fun isSunmiDevice(): Boolean =
         Build.MANUFACTURER.contains("SUNMI", ignoreCase = true) ||
             Build.BRAND.contains("SUNMI", ignoreCase = true)
+
+    private fun isSenraiseDevice(): Boolean =
+        Build.MANUFACTURER.contains("SENRAISE", ignoreCase = true) ||
+            Build.BRAND.contains("SENRAISE", ignoreCase = true) ||
+            Build.MODEL.uppercase().startsWith("H10")
 
     // ---------- Contenu du ticket (commun aux deux méthodes) ----------
 
@@ -150,6 +162,72 @@ class MainActivity : FlutterActivity() {
         p.setAlignment(1, null)
         p.printTextWithFont("\n${piedTicket(t)}\n", null, 22f, null)
         p.lineWrap(3, null)
+    }
+
+    // ---------- Senraise H10 / H10C / H10S / H10P ----------
+
+    private fun printViaSenraise(t: TicketData, result: MethodChannel.Result) {
+        var repondu = false
+        fun repondre(action: () -> Unit) {
+            if (!repondu) { repondu = true; action() }
+        }
+
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                try {
+                    val p = PrinterInterface.Stub.asInterface(binder)
+                        ?: throw IllegalStateException("Service Senraise indisponible.")
+                    imprimerSenraise(p, t)
+                    repondre { result.success("Ticket imprimé sur l'imprimante Senraise.") }
+                } catch (e: Exception) {
+                    repondre { printViaAndroidFramework(t, result) }
+                } finally {
+                    try { unbindService(this) } catch (_: Exception) {}
+                }
+            }
+
+            override fun onServiceDisconnected(name: ComponentName?) {}
+        }
+
+        val intent = Intent().apply {
+            setClassName(
+                "recieptservice.com.recieptservice",
+                "recieptservice.com.recieptservice.service.PrinterService"
+            )
+        }
+        try {
+            val ok = bindService(intent, connection, Context.BIND_AUTO_CREATE)
+            if (!ok) repondre { printViaAndroidFramework(t, result) }
+        } catch (e: Exception) {
+            repondre { printViaAndroidFramework(t, result) }
+        }
+    }
+
+    private fun imprimerSenraise(p: PrinterInterface, t: TicketData) {
+        val sep = "--------------------------------\n"
+        val entete = enteteLignes(t)
+        p.setAlignment(1)
+        p.setTextBold(true); p.setTextSize(28f)
+        p.printText("${entete.first()}\n")
+        p.setTextBold(false); p.setTextSize(22f)
+        for (l in entete.drop(1)) p.printText("$l\n")
+
+        p.setAlignment(0); p.setTextSize(24f)
+        p.printText("Ticket #${t.numero}\n${t.date}\n$sep")
+        for (a in t.articles) {
+            val q = (a["quantite"] as? Number)?.toInt() ?: 1
+            val pu = (a["prix"] as? Number)?.toDouble() ?: 0.0
+            val st = (a["sousTotal"] as? Number)?.toDouble() ?: 0.0
+            p.printText("${txt(a, "designation")}\n")
+            p.printText("  $q x ${fmt(pu)} = ${fmt(st)} ${t.devise}\n")
+        }
+        p.printText(sep)
+
+        p.setAlignment(2); p.setTextBold(true); p.setTextSize(28f)
+        p.printText("TOTAL : ${fmt(t.total)} ${t.devise}\n")
+        p.setTextBold(false); p.setAlignment(1); p.setTextSize(22f)
+        p.printText("\n${piedTicket(t)}\n")
+        p.nextLine(3)
     }
 
     // ---------- Impression Android (secours) ----------

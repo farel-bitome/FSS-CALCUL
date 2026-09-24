@@ -29,8 +29,9 @@ interne.
 
 ### Senraise H10
 
-Détection des modèles **H10, H10C, H10S et H10P** et impression directe via le plugin Flutter
-`senraise_printer` (côté Dart, pas dans `MainActivity.kt`). Le H10S et le H10P ont une
+Détection des modèles **H10, H10C, H10S et H10P** et impression directe via le service Android de Senraise
+(`recieptservice`), appelé directement depuis `MainActivity.kt` (interface copiée dans
+`android/app/src/main/java/recieptservice/`, licence BSD-3). Le H10S et le H10P ont une
 imprimante thermique intégrée 58 mm.
 
 Pour un modèle H10 personnalisé ou OEM dont le firmware expose une API différente, conserver le
