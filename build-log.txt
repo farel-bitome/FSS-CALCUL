@@ -1,0 +1,69 @@
+Upgrading gradle.properties
+Upgrading gradle.properties
+Running Gradle task 'assembleRelease'...                        
+Warning: Flutter support for your project's Gradle version (8.14.3) will soon be dropped. Please upgrade your Gradle version to a version of at least 9.1.0 soon.
+Alternatively, use the flag "--android-skip-build-dependency-validation" to bypass this check.
+
+Potential fix: Your project's gradle version is typically defined in the gradle wrapper file. By default, this can be found at /home/runner/work/FSS-CALCUL/FSS-CALCUL/android/gradle/wrapper/gradle-wrapper.properties. 
+For more information, see https://docs.gradle.org/current/userguide/gradle_wrapper.html.
+
+Warning: Flutter support for your project's Android Gradle Plugin version (Android Gradle Plugin version 8.13.0) will soon be dropped. Please upgrade your Android Gradle Plugin version to a version of at least Android Gradle Plugin version 9.0.1 soon.
+Alternatively, use the flag "--android-skip-build-dependency-validation" to bypass this check.
+
+Potential fix: Your project's AGP version is typically defined in the plugins block of the `settings.gradle` file (/home/runner/work/FSS-CALCUL/FSS-CALCUL/android/settings.gradle), by a plugin with the id of com.android.application. 
+If you don't see a plugins block, your project was likely created with an older template version. In this case it is most likely defined in the top-level build.gradle file (/home/runner/work/FSS-CALCUL/FSS-CALCUL/android/build.gradle) by the following line in the dependencies block of the buildscript: "classpath 'com.android.tools.build:gradle:<version>'".
+
+Warning: Flutter support for your project's Kotlin version (2.2.21) will soon be dropped. Please upgrade your Kotlin version to a version of at least 2.3.20 soon.
+Alternatively, use the flag "--android-skip-build-dependency-validation" to bypass this check.
+
+Potential fix: Your project's KGP version is typically defined in the plugins block of the `settings.gradle` file (/home/runner/work/FSS-CALCUL/FSS-CALCUL/android/settings.gradle), by a plugin with the id of org.jetbrains.kotlin.android. 
+If you don't see a plugins block, your project was likely created with an older template version, in which case it is most likely defined in the top-level build.gradle file (/home/runner/work/FSS-CALCUL/FSS-CALCUL/android/build.gradle) by the ext.kotlin_version property.
+
+Font asset "MaterialIcons-Regular.otf" was tree-shaken, reducing it from 1645184 to 5600 bytes (99.7% reduction). Tree-shaking can be disabled by providing the --no-tree-shake-icons flag when building your app.
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:mergeReleaseNativeLibs'.
+> Could not resolve all files for configuration ':app:releaseRuntimeClasspath'.
+   > Could not resolve all dependencies for configuration ':app:releaseRuntimeClasspath'.
+      > Could not find io.flutter:armeabi_v7a_release:1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.
+        Searched in the following locations:
+          - https://dl.google.com/dl/android/maven2/io/flutter/armeabi_v7a_release/1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded/armeabi_v7a_release-1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.pom
+          - https://repo.maven.apache.org/maven2/io/flutter/armeabi_v7a_release/1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded/armeabi_v7a_release-1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.pom
+        Required by:
+            project :app
+   > Could not resolve all dependencies for configuration ':app:releaseRuntimeClasspath'.
+      > Could not find io.flutter:arm64_v8a_release:1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.
+        Searched in the following locations:
+          - https://dl.google.com/dl/android/maven2/io/flutter/arm64_v8a_release/1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded/arm64_v8a_release-1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.pom
+          - https://repo.maven.apache.org/maven2/io/flutter/arm64_v8a_release/1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded/arm64_v8a_release-1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.pom
+        Required by:
+            project :app
+   > Could not resolve all dependencies for configuration ':app:releaseRuntimeClasspath'.
+      > Could not find io.flutter:x86_64_release:1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.
+        Searched in the following locations:
+          - https://dl.google.com/dl/android/maven2/io/flutter/x86_64_release/1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded/x86_64_release-1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.pom
+          - https://repo.maven.apache.org/maven2/io/flutter/x86_64_release/1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded/x86_64_release-1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.pom
+        Required by:
+            project :app
+   > Could not resolve all dependencies for configuration ':app:releaseRuntimeClasspath'.
+      > Could not find io.flutter:flutter_embedding_release:1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.
+        Searched in the following locations:
+          - https://dl.google.com/dl/android/maven2/io/flutter/flutter_embedding_release/1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded/flutter_embedding_release-1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.pom
+          - https://repo.maven.apache.org/maven2/io/flutter/flutter_embedding_release/1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded/flutter_embedding_release-1.0.0-af7e796e161ae0bb1ff0758c71a7105418bd9ded.pom
+        Required by:
+            project :app > project :shared_preferences_android
+
+* Try:
+> The project declares repositories, effectively ignoring the repositories you have declared in the settings.
+   To determine how project repositories are declared, configure your build to fail on project repositories.
+   For more information, please refer to https://docs.gradle.org/8.14.3/userguide/declaring_repositories.html#sub:fail_build_on_project_repositories in the Gradle documentation.
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 2m 5s
+Running Gradle task 'assembleRelease'...                          126.5s
+Gradle task assembleRelease failed with exit code 1
