@@ -183,7 +183,7 @@ class _CaissePageState extends State<CaissePage> {
         title:Text(a.designation,style:const TextStyle(fontWeight:FontWeight.bold)),
         subtitle:Text('${a.quantite} × ${money(a.prix)}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[
           Text(money(a.sousTotal)),IconButton(onPressed:()=>setState(()=>articles.removeAt(i)),
-            icon:const Icon(Icons.delete,color:Color(0xFFD90429))) ]);})),
+            icon:const Icon(Icons.delete,color:Color(0xFFD90429))) ]));})),
     Container(padding:const EdgeInsets.fromLTRB(16,10,16,18),color:const Color(0xFF0037D6),child:Row(children:[
       const Text('TOTAL',style:TextStyle(color:Colors.white,fontSize:20,fontWeight:FontWeight.bold)),const Spacer(),
       Text(money(total),style:const TextStyle(color:Colors.white,fontSize:22,fontWeight:FontWeight.bold)),const SizedBox(width:10),
@@ -196,7 +196,7 @@ class _CaissePageState extends State<CaissePage> {
       subtitle:Text('${t.articles.length} article(s) • ${money(t.total)}'),
       trailing:IconButton(icon:const Icon(Icons.print),onPressed:()async{
         try{final r=await PrinterService.printTicket(t,symbole,societe);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(r)));}
-        on PlatformException catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.message??e.code)));}}));});
+        on PlatformException catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.message??e.code)));}})));});
 
   Future<void> _companyDialog() async {
     final fields=[
@@ -231,7 +231,7 @@ class _CaissePageState extends State<CaissePage> {
         TextField(controller:n,decoration:const InputDecoration(labelText:'Nom complet')),
         TextField(controller:id,decoration:const InputDecoration(labelText:'Identifiant')),
         TextField(controller:pw,obscureText:true,decoration:const InputDecoration(labelText:'Mot de passe')),
-        DropdownButtonFormField<String>(value:role,decoration:const InputDecoration(labelText:'Rôle'),
+        DropdownButtonFormField<String>(initialValue:role,decoration:const InputDecoration(labelText:'Rôle'),
           items:roles.map((r)=>DropdownMenuItem(value:r,child:Text(r))).toList(),onChanged:(v)=>setD(()=>role=v??role)),
         SwitchListTile(title:const Text('Utilisateur actif'),value:actif,onChanged:(v)=>setD(()=>actif=v)),
         const Align(alignment:Alignment.centerLeft,child:Text('Droits / permissions',style:TextStyle(fontWeight:FontWeight.bold))),

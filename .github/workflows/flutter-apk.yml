@@ -60,7 +60,26 @@ jobs:
         run: flutter pub get
 
       - name: Compiler l'APK
-        run: flutter build apk --release
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter build apk --release 2>&1 | tee build-log.txt
+
+      # En cas d'échec, le journal complet est publié sur la branche « build-log »
+      # (fichier build-log.txt) pour pouvoir être lu sans capture d'écran.
+      - name: Publier le journal d'erreur
+        if: failure()
+        shell: bash
+        run: |
+          cp build-log.txt /tmp/build-log.txt 2>/dev/null || echo "pas de journal" > /tmp/build-log.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan build-log
+          git rm -rfq . || true
+          cp /tmp/build-log.txt build-log.txt
+          git add build-log.txt
+          git commit -qm "Journal de compilation ${GITHUB_SHA::7}"
+          git push -f origin build-log
 
       - name: Publier l'APK
         uses: actions/upload-artifact@v4
