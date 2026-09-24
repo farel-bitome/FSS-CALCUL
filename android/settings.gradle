@@ -22,13 +22,5 @@ plugins {
     id "org.jetbrains.kotlin.android" version "2.2.21" apply false
 }
 
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
 rootProject.name = "FSS-CALCUL"
 include ":app"
