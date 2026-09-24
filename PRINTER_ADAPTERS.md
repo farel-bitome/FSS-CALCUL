@@ -1,18 +1,37 @@
 # Imprimantes intégrées — adaptateurs
 
-Le projet sépare la caisse du transport d'impression.
+Le projet sépare la caisse du transport d'impression : le ticket envoyé par Flutter reste
+identique, quel que soit le terminal.
 
-Pour chaque famille de terminal qui exige un SDK propriétaire, ajouter un adaptateur natif dans
-`MainActivity.kt` (ou un fichier Kotlin séparé), détecter le fabricant/modèle, puis appeler son
-service local. Le ticket envoyé par Flutter reste identique.
+## Ajouter un adaptateur
 
-Familles génériques prévues :
-- Android Print Framework
-- ESC/POS (USB / Bluetooth / TCP)
-- Services d'impression constructeur
-- SDK constructeur (adaptateur dédié)
+Pour un terminal qui exige un SDK propriétaire :
 
+1. Détecter le fabricant et le modèle (`Build.MANUFACTURER`, `Build.MODEL`).
+2. Si un plugin Flutter fiable existe, l'utiliser côté Dart.
+3. Sinon, écrire un adaptateur natif en Kotlin (de préférence dans un fichier séparé, appelé
+   depuis `MainActivity.kt` via un `MethodChannel`) qui appelle le service local du fabricant.
+4. En cas d'échec, retomber sur l'impression Android.
+
+## Familles prévues
+
+- SDK / service constructeur (adaptateur dédié)
+- ESC/POS (USB, Bluetooth, TCP)
+- Système d'impression Android (secours)
+
+## Adaptateurs existants
+
+### SUNMI
+
+Adaptateur natif Kotlin utilisant `com.sunmi:printerlibrary:1.0.24`, déclaré dans
+`android/app/build.gradle`. Détection de tout terminal SUNMI exposant le service d'impression
+interne.
 
 ### Senraise H10
 
-Détection automatique des modèles **H10 / H10C / H10S / H10P** et impression directe via le plugin `senraise_printer`. Le H10S et H10P utilisent une imprimante thermique intégrée 58 mm selon Senraise. Pour un modèle H10 personnalisé/OEM dont le firmware expose une API différente, conserver le fallback Android ou fournir le SDK constructeur.
+Détection des modèles **H10, H10C, H10S et H10P** et impression directe via le plugin Flutter
+`senraise_printer` (côté Dart, pas dans `MainActivity.kt`). Le H10S et le H10P ont une
+imprimante thermique intégrée 58 mm.
+
+Pour un modèle H10 personnalisé ou OEM dont le firmware expose une API différente, conserver le
+secours Android ou obtenir le SDK auprès de Senraise.
