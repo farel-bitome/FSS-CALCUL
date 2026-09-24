@@ -50,7 +50,20 @@ class Article {
 class Ticket {
   Ticket(this.numero,this.date,this.articles,this.total);
   final int numero; final DateTime date; final List<Article> articles; final double total;
+  Map<String,dynamic> toJson()=>{'numero':numero,'date':date.toIso8601String(),'total':total,
+    'articles':articles.map((a)=>{'designation':a.designation,'prix':a.prix,'quantite':a.quantite}).toList()};
+  factory Ticket.fromJson(Map<String,dynamic> j)=>Ticket(
+    (j['numero'] as num).toInt(),DateTime.tryParse(j['date']??'')??DateTime.now(),
+    (j['articles'] as List? ?? const []).map((e)=>Article(e['designation']??'',
+      (e['prix'] as num?)?.toDouble()??0.0,(e['quantite'] as num?)?.toInt()??1)).toList(),
+    (j['total'] as num?)?.toDouble()??0.0);
 }
+
+/// Devises : on mémorise le code ISO, on affiche le symbole.
+const devisesDisponibles={'XAF':'FCFA','XOF':'FCFA','EUR':'€','USD':'\$','GBP':'£','CHF':'CHF','MAD':'MAD'};
+const libellesDevises={'XAF':'XAF – Franc CFA (CEMAC)','XOF':'XOF – Franc CFA (UEMOA)','EUR':'EUR – Euro',
+  'USD':'USD – Dollar américain','GBP':'GBP – Livre sterling','CHF':'CHF – Franc suisse','MAD':'MAD – Dirham marocain'};
+String symboleDevise(String code)=>devisesDisponibles[code]??code;
 
 class PrinterService {
   static const _channel=MethodChannel('fss_calcul/printer');
@@ -58,25 +71,24 @@ class PrinterService {
   static Future<String> deviceInfo() async =>
       await _channel.invokeMethod<String>('deviceInfo')??'Android';
 
+  /// [devise] = symbole affiché (ex. FCFA).
   static Future<String> printTicket(Ticket ticket,String devise,AppCompany company) async {
     final info=await deviceInfo();
-    if (_isH10(info)) { await _printH10(ticket,devise,company); return 'Ticket imprimé sur Senraise H10.'; }
-    final lines=<Map<String,dynamic>>[
-      {'designation':company.nom.isEmpty?'FSS-CALCUL':company.nom,'type':'header'},
-      if(company.adresse.isNotEmpty) {'designation':company.adresse,'type':'info'},
-      if(company.telephone.isNotEmpty) {'designation':company.telephone,'type':'info'},
-      {'designation':'BITOME MEYEH','type':'subheader'},
-      {'designation':'Ticket #${ticket.numero}','type':'info'},
-      {'designation':_date(ticket.date),'type':'info'},
-      ...ticket.articles.map((a)=>{'designation':a.designation,'quantite':a.quantite,'prix':a.prix,
-        'sousTotal':a.sousTotal,'type':'article'}),
-      {'designation':'TOTAL','type':'total','sousTotal':ticket.total,'devise':devise},
-      {'designation':company.piedTicket,'type':'footer'},
-    ];
+    if (_isH10(info)) {
+      try { await _printH10(ticket,devise,company); return 'Ticket imprimé sur Senraise H10.'; }
+      catch (_) { /* service Senraise absent : impression Android de secours */ }
+    }
     return await _channel.invokeMethod<String>('printTicket',{
-      'items':lines,'total':ticket.total,'ticket':ticket.numero,'devise':devise,
-      'company':company.toJson(),
+      'ticket':ticket.numero,'date':_date(ticket.date),'devise':devise,'total':ticket.total,
+      'articles':ticket.articles.map((a)=>{'designation':a.designation,'quantite':a.quantite,
+        'prix':a.prix,'sousTotal':a.sousTotal}).toList(),
+      'societe':company.toJson(),
     })??'Impression demandée';
+  }
+  static String _fmt(double n){
+    final s=n.toStringAsFixed(0); final b=StringBuffer();
+    for(int i=0;i<s.length;i++){ if(i>0&&(s.length-i)%3==0&&s[i-1]!='-')b.write(' '); b.write(s[i]); }
+    return b.toString();
   }
 
   static bool _isH10(String info) {
@@ -90,18 +102,20 @@ class PrinterService {
     if(c.adresse.isNotEmpty) await _senraise.printText('${c.adresse}\n');
     if(c.telephone.isNotEmpty) await _senraise.printText('${c.telephone}\n');
     if(c.email.isNotEmpty) await _senraise.printText('${c.email}\n');
-    await _senraise.printText('BITOME MEYEH\n');
+    if(c.siteWeb.isNotEmpty) await _senraise.printText('${c.siteWeb}\n');
+    if(c.identifiantFiscal.isNotEmpty) await _senraise.printText('NIF : ${c.identifiantFiscal}\n');
+    if(c.registreCommerce.isNotEmpty) await _senraise.printText('RCCM : ${c.registreCommerce}\n');
     await _senraise.setAlignment(0);
     await _senraise.printText('Ticket #${t.numero}\n${_date(t.date)}\n--------------------------------\n');
     for(final a in t.articles) {
       await _senraise.printText('${a.designation}\n');
-      await _senraise.printText('${a.quantite} x ${a.prix.toStringAsFixed(0)} = ${a.sousTotal.toStringAsFixed(0)} $devise\n');
+      await _senraise.printText('  ${a.quantite} x ${_fmt(a.prix)} = ${_fmt(a.sousTotal)} $devise\n');
     }
     await _senraise.printText('--------------------------------\n');
     await _senraise.setAlignment(2); await _senraise.setTextBold(true); await _senraise.setTextSize(28);
-    await _senraise.printText('TOTAL: ${t.total.toStringAsFixed(0)} $devise\n');
+    await _senraise.printText('TOTAL : ${_fmt(t.total)} $devise\n');
     await _senraise.setTextBold(false); await _senraise.setAlignment(1); await _senraise.setTextSize(20);
-    await _senraise.printText('${c.piedTicket}\n'); await _senraise.nextLine(3);
+    await _senraise.printText('${c.piedTicket.isEmpty?'Merci pour votre confiance':c.piedTicket}\n'); await _senraise.nextLine(3);
   }
   static String _date(DateTime d) =>
       '${d.day.toString().padLeft(2,'0')}/${d.month.toString().padLeft(2,'0')}/${d.year} '
@@ -129,16 +143,20 @@ class _CaissePageState extends State<CaissePage> {
     'Vendre','Modifier les ventes','Supprimer les articles','Valider les tickets','Imprimer',
     'Voir l’historique','Réimprimer','Voir la caisse','Clôturer la caisse','Voir les statistiques',
     'Gérer les utilisateurs','Modifier les paramètres'];
-  final devises=['FCFA','EUR','USD','GBP','CHF','MAD','XOF','XAF'];
   List<AppUser> utilisateurs=[];
   AppCompany societe=AppCompany();
-  String devise='FCFA'; int page=0, numeroTicket=1;
+  String devise='XAF'; int page=0, numeroTicket=1;
+  String get symbole=>symboleDevise(devise);
   double get total=>articles.fold(0,(s,a)=>s+a.sousTotal);
 
   @override void initState(){super.initState(); _load();}
   Future<void> _load() async {
     final p=await SharedPreferences.getInstance();
-    devise=p.getString('devise')??'FCFA';
+    final d=p.getString('devise')??'XAF';
+    devise=devisesDisponibles.containsKey(d)?d:'XAF'; // ancien réglage « FCFA » -> XAF
+    numeroTicket=p.getInt('numeroTicket')??1;
+    final ts=p.getString('tickets');
+    if(ts!=null){try{tickets..clear()..addAll((jsonDecode(ts) as List).map((e)=>Ticket.fromJson(Map<String,dynamic>.from(e))));}catch(_){}}
     final cs=p.getString('societe'); if(cs!=null){try{societe=AppCompany.fromJson(jsonDecode(cs));}catch(_){}} 
     final us=p.getString('utilisateurs');
     if(us!=null){try{utilisateurs=(jsonDecode(us) as List).map((e)=>AppUser.fromJson(Map<String,dynamic>.from(e))).toList();}catch(_){}} 
@@ -153,6 +171,11 @@ class _CaissePageState extends State<CaissePage> {
     final p=await SharedPreferences.getInstance();
     await p.setString('utilisateurs',jsonEncode(utilisateurs.map((u)=>u.toJson()).toList()));
   }
+  Future<void> _saveTickets() async {
+    final p=await SharedPreferences.getInstance();
+    await p.setInt('numeroTicket',numeroTicket);
+    await p.setString('tickets',jsonEncode(tickets.take(500).map((t)=>t.toJson()).toList()));
+  }
   Future<void> _saveCompany() async {
     final p=await SharedPreferences.getInstance(); await p.setString('societe',jsonEncode(societe.toJson()));
   }
@@ -160,7 +183,7 @@ class _CaissePageState extends State<CaissePage> {
     final p=await SharedPreferences.getInstance(); await p.setString('devise',d);
     if(mounted)setState(()=>devise=d);
   }
-  String money(double n)=>'${n.toStringAsFixed(0)} $devise';
+  String money(double n)=>'${PrinterService._fmt(n)} $symbole';
 
   void ajouter(){
     final d=designation.text.trim(), p=double.tryParse(prix.text.replaceAll(',','.')), q=int.tryParse(quantite.text);
@@ -172,17 +195,18 @@ class _CaissePageState extends State<CaissePage> {
     if(articles.isEmpty)return;
     final t=Ticket(numeroTicket++,DateTime.now(),articles.map((a)=>Article(a.designation,a.prix,a.quantite)).toList(),total);
     setState((){tickets.insert(0,t);articles.clear();});
-    try{final r=await PrinterService.printTicket(t,devise,societe);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(r)));}
+    await _saveTickets();
+    try{final r=await PrinterService.printTicket(t,symbole,societe);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(r)));}
     on PlatformException catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.message??e.code)));}
   }
 
   Widget accueil()=>Column(children:[
-    if(societe.nom.isNotEmpty) Container(width:double.infinity,padding:const EdgeInsets.all(10),
+    Container(width:double.infinity,padding:const EdgeInsets.all(10),
       child:Row(children:[Image.asset('assets/fss_logo.png',width:42,height:42),const SizedBox(width:10),
-        Expanded(child:Text(societe.nom,style:const TextStyle(fontWeight:FontWeight.bold,fontSize:18)))])),
+        Expanded(child:Text(societe.nom.isEmpty?'FSS-CALCUL':societe.nom,style:const TextStyle(fontWeight:FontWeight.bold,fontSize:18)))])),
     Card(margin:const EdgeInsets.all(12),child:Padding(padding:const EdgeInsets.all(12),child:Column(children:[
       TextField(controller:designation,decoration:const InputDecoration(labelText:'Désignation',prefixIcon:Icon(Icons.shopping_bag))),
-      TextField(controller:prix,keyboardType:TextInputType.number,decoration:InputDecoration(labelText:'Prix de vente ($devise)',prefixIcon:const Icon(Icons.payments))),
+      TextField(controller:prix,keyboardType:TextInputType.number,decoration:InputDecoration(labelText:'Prix de vente ($symbole)',prefixIcon:const Icon(Icons.payments))),
       TextField(controller:quantite,keyboardType:TextInputType.number,decoration:const InputDecoration(labelText:'Quantité',prefixIcon:Icon(Icons.numbers))),
       const SizedBox(height:10),SizedBox(width:double.infinity,child:FilledButton.icon(
         onPressed:ajouter,icon:const Icon(Icons.add),label:const Text('Ajouter l’article')))]))),
@@ -203,7 +227,7 @@ class _CaissePageState extends State<CaissePage> {
     final t=tickets[i];return Card(child:ListTile(title:Text('Ticket #${t.numero}'),
       subtitle:Text('${t.articles.length} article(s) • ${money(t.total)}'),
       trailing:IconButton(icon:const Icon(Icons.print),onPressed:()async{
-        try{final r=await PrinterService.printTicket(t,devise,societe);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(r)));}
+        try{final r=await PrinterService.printTicket(t,symbole,societe);if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(r)));}
         on PlatformException catch(e){if(mounted)ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(e.message??e.code)));}}));});
 
   Future<void> _companyDialog() async {
@@ -276,7 +300,8 @@ class _CaissePageState extends State<CaissePage> {
       subtitle:Text(societe.nom.isEmpty?'Renseigner les informations de votre société':'Modifier les informations de la société'),
       trailing:const Icon(Icons.chevron_right),onTap:_companyDialog)),
     Card(child:ListTile(leading:const Icon(Icons.currency_exchange),title:const Text('Devise'),
-      subtitle:Text(devise),trailing:DropdownButton<String>(value:devise,items:devises.map((d)=>DropdownMenuItem(value:d,child:Text(d))).toList(),
+      subtitle:Text(libellesDevises[devise]??devise),trailing:DropdownButton<String>(value:devise,
+        items:devisesDisponibles.keys.map((d)=>DropdownMenuItem(value:d,child:Text(d))).toList(),
         onChanged:(v){if(v!=null)_saveCurrency(v);}))),
     const Divider(height:28),
     const Text('IMPRESSION MULTI-TERMINAUX',style:TextStyle(fontSize:18,fontWeight:FontWeight.bold)),
