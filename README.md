@@ -33,7 +33,13 @@ Ordre de priorité à l'impression :
 2. **ESC/POS** (USB, Bluetooth, TCP/Wi-Fi) — couche d'adaptation à ajouter selon le matériel
 3. **Système d'impression Android** — solution de secours générique
 
-Le ticket est prévu pour du papier thermique **58 mm**.
+Le ticket est imprimé sous forme d'image de 384 points de large (papier thermique **58 mm**),
+entièrement en gras, avec le filigrane **BITOME-FAREL** en diagonale sur toute la hauteur.
+La même image est utilisée sur SUNMI, Senraise et l'impression Android de secours.
+
+Avant chaque impression (ticket validé ou réimpression depuis l'historique), un **aperçu**
+s'affiche avec le choix du papier **58 mm** (384 points) ou **80 mm** (576 points). Le dernier
+choix est mémorisé sur le terminal.
 
 Détails techniques des adaptateurs : voir `PRINTER_ADAPTERS.md`.
 
@@ -65,6 +71,20 @@ Android de Senraise (`recieptservice`), appelé directement depuis `MainActivity
   à tester sur un vrai terminal avant livraison. En cas d'échec, demander le SDK officiel au
   support Senraise.
 
+## Connexion
+
+Un écran de connexion est demandé à chaque ouverture de l'application.
+
+**Comptes fournis par défaut** (comme FSS-CAISSE) :
+- **BITOME** / mot de passe `3701` → super utilisateur : tous les droits, **ne peut jamais être
+  modifié ni supprimé**.
+- **admin** / mot de passe `admin` → accès complet ; un nouveau mot de passe doit obligatoirement
+  être choisi à la première connexion.
+
+Les autres comptes sont créés dans l'onglet **Utilisateurs**. Les onglets visibles dépendent de
+leurs droits (Historique, Paramètres, Utilisateurs). Le menu du compte, en haut à droite, permet
+de changer son mot de passe et de se déconnecter.
+
 ## Paramètres
 
 ### Devise
@@ -95,6 +115,8 @@ tickets) : la numérotation continue après un redémarrage de l'application.
 
 **Paramètres > Paramètres société** permet de renseigner :
 
+- Logo (choisi dans la galerie du terminal) : affiché à la connexion, dans l'en-tête et imprimé
+  en haut des tickets
 - Nom de la société
 - Adresse
 - Téléphone
@@ -109,5 +131,5 @@ Ces informations sont enregistrées localement et reprises automatiquement sur l
 
 ### Logo
 
-Le logo FSS-CALCUL (`assets/fss_logo.png`) est affiché dans l'en-tête, les paramètres et
-l'écran d'accueil.
+Tant qu'aucun logo de société n'est choisi, le logo FSS-CALCUL (`assets/fss_logo.png`) est
+affiché à sa place.

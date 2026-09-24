@@ -4,6 +4,15 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.app.Activity
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.util.Base64
+import java.io.ByteArrayOutputStream
 import android.os.IBinder
 import android.os.Build
 import android.print.PrintAttributes
@@ -28,6 +37,10 @@ import recieptservice.com.recieptservice.PrinterInterface
 class MainActivity : FlutterActivity() {
     private val channel = "fss_calcul/printer"
 
+    /** Réponse en attente pour le choix du logo dans la galerie. */
+    private var logoEnAttente: MethodChannel.Result? = null
+    private val demandeLogo = 4711
+
     /** Référence gardée pour que la WebView ne soit pas détruite avant la fin de l'impression. */
     private var printWebView: WebView? = null
 
@@ -38,7 +51,14 @@ class MainActivity : FlutterActivity() {
         val total: Double,
         val articles: List<Map<*, *>>,
         val societe: Map<*, *>,
-    )
+        /** Largeur du papier en mm : 58 ou 80. */
+        val largeurMm: Int,
+        /** Logo de la société (PNG), ou null. */
+        val logo: ByteArray?,
+    ) {
+        /** Largeur imprimable en points (203 dpi) : 384 pour 58 mm, 576 pour 80 mm. */
+        val largeurPx: Int get() = if (largeurMm >= 80) 576 else 384
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -49,15 +69,17 @@ class MainActivity : FlutterActivity() {
                     "deviceInfo" -> result.success(
                         "${Build.MANUFACTURER} ${Build.MODEL} • Android ${Build.VERSION.RELEASE}"
                     )
+                    "renderTicket" -> {
+                        try {
+                            val out = ByteArrayOutputStream()
+                            renderTicket(ticketDepuis(call)).compress(Bitmap.CompressFormat.PNG, 100, out)
+                            result.success(out.toByteArray())
+                        } catch (e: Exception) {
+                            result.error("RENDER", e.message, null)
+                        }
+                    }
                     "printTicket" -> {
-                        val t = TicketData(
-                            numero = call.argument<Number>("ticket")?.toInt() ?: 0,
-                            date = call.argument<String>("date") ?: "",
-                            devise = call.argument<String>("devise") ?: "FCFA",
-                            total = call.argument<Number>("total")?.toDouble() ?: 0.0,
-                            articles = call.argument<List<Map<*, *>>>("articles") ?: emptyList(),
-                            societe = call.argument<Map<*, *>>("societe") ?: emptyMap<String, Any>(),
-                        )
+                        val t = ticketDepuis(call)
                         if (isSunmiDevice()) {
                             printViaSunmi(t, result)
                         } else if (isSenraiseDevice()) {
@@ -66,10 +88,58 @@ class MainActivity : FlutterActivity() {
                             printViaAndroidFramework(t, result)
                         }
                     }
+                    "pickLogo" -> {
+                        logoEnAttente?.success(null)
+                        logoEnAttente = result
+                        try {
+                            val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                                type = "image/*"
+                                addCategory(Intent.CATEGORY_OPENABLE)
+                            }
+                            startActivityForResult(Intent.createChooser(intent, "Choisir le logo"), demandeLogo)
+                        } catch (e: Exception) {
+                            logoEnAttente = null
+                            result.error("LOGO", "Impossible d'ouvrir la galerie : ${e.message}", null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
     }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != demandeLogo) return
+        val r = logoEnAttente ?: return
+        logoEnAttente = null
+        val uri = data?.data
+        if (resultCode != Activity.RESULT_OK || uri == null) { r.success(null); return }
+        try {
+            val brut = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                ?: throw IllegalStateException("Image illisible.")
+            // Logo réduit (max 512 px) : suffisant pour l'écran et pour un ticket 80 mm
+            val echelle = minOf(1f, 512f / maxOf(brut.width, brut.height))
+            val img = if (echelle < 1f)
+                Bitmap.createScaledBitmap(brut, (brut.width * echelle).toInt().coerceAtLeast(1), (brut.height * echelle).toInt().coerceAtLeast(1), true)
+            else brut
+            val out = ByteArrayOutputStream()
+            img.compress(Bitmap.CompressFormat.PNG, 100, out)
+            r.success(out.toByteArray())
+        } catch (e: Exception) {
+            r.error("LOGO", e.message, null)
+        }
+    }
+
+    private fun ticketDepuis(call: io.flutter.plugin.common.MethodCall) = TicketData(
+        numero = call.argument<Number>("ticket")?.toInt() ?: 0,
+        date = call.argument<String>("date") ?: "",
+        devise = call.argument<String>("devise") ?: "FCFA",
+        total = call.argument<Number>("total")?.toDouble() ?: 0.0,
+        articles = call.argument<List<Map<*, *>>>("articles") ?: emptyList(),
+        societe = call.argument<Map<*, *>>("societe") ?: emptyMap<String, Any>(),
+        largeurMm = call.argument<Number>("largeur")?.toInt() ?: 58,
+        logo = call.argument<ByteArray>("logo"),
+    )
 
     /** Détection sur le fabricant uniquement : le nom du modèle (V2, T1, S2…) ne suffit pas. */
     private fun isSunmiDevice(): Boolean =
@@ -101,6 +171,213 @@ class MainActivity : FlutterActivity() {
 
     private fun piedTicket(t: TicketData): String =
         txt(t.societe, "piedTicket").ifEmpty { "Merci pour votre confiance" }
+
+    // ---------- Rendu du ticket en image (58 mm, tout en gras, filigrane) ----------
+
+    private val marge = 6
+    private val filigrane = "BITOME-FAREL"
+
+    private fun paint(taille: Float, align: Paint.Align = Paint.Align.LEFT) = Paint().apply {
+        isAntiAlias = false          // bords nets pour l'impression thermique
+        color = Color.BLACK
+        textSize = taille
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        isFakeBoldText = true        // gras renforcé
+        textAlign = align
+    }
+
+    /** Coupe un texte en lignes qui tiennent dans [largeur] pixels. */
+    private fun decouper(texte: String, pt: Paint, largeur: Float): List<String> {
+        val lignes = mutableListOf<String>()
+        for (para in texte.split('\n')) {
+            var courant = ""
+            for (mot in para.split(' ')) {
+                val essai = if (courant.isEmpty()) mot else "$courant $mot"
+                if (pt.measureText(essai) <= largeur) { courant = essai; continue }
+                if (courant.isNotEmpty()) lignes.add(courant)
+                // mot trop long : coupé caractère par caractère
+                var m = mot
+                while (pt.measureText(m) > largeur && m.length > 1) {
+                    var n = m.length
+                    while (n > 1 && pt.measureText(m.substring(0, n)) > largeur) n--
+                    lignes.add(m.substring(0, n)); m = m.substring(n)
+                }
+                courant = m
+            }
+            lignes.add(courant)
+        }
+        return lignes
+    }
+
+    private sealed class Ligne(val hauteur: Float)
+    private class Texte(val s: String, val pt: Paint, h: Float) : Ligne(h)
+    private class Colonnes(val gauche: String, val droite: String, val pt: Paint, h: Float) : Ligne(h)
+    private class Separateur : Ligne(14f)
+    private class Logo(val bmp: Bitmap) : Ligne(bmp.height + 8f)
+    /** Une ligne d'article : désignation | quantité | montant, sur la même ligne. */
+    private class LigneArticle(
+        val designation: String, val qte: String, val montant: String,
+        val pt: Paint, h: Float,
+    ) : Ligne(h)
+
+    private fun renderTicket(t: TicketData): Bitmap {
+        val largeurPx = t.largeurPx
+        val utile = (largeurPx - 2 * marge).toFloat()
+        val titre = paint(32f, Paint.Align.CENTER)
+        val centre = paint(22f, Paint.Align.CENTER)
+        val normal = paint(23f)
+        val total = paint(30f)
+        val lignes = mutableListOf<Ligne>()
+        fun ajouter(texte: String, pt: Paint) {
+            for (l in decouper(texte, pt, utile)) lignes.add(Texte(l, pt, pt.textSize * 1.25f))
+        }
+
+        logoTicket(t, utile)?.let { lignes.add(Logo(it)) }
+        val entete = enteteLignes(t)
+        ajouter(entete.first(), titre)
+        for (l in entete.drop(1)) ajouter(l, centre)
+        lignes.add(Separateur())
+        ajouter("Ticket #${t.numero}", normal)
+        ajouter(t.date, normal)
+        lignes.add(Separateur())
+        // Colonnes : désignation (reste de la largeur) | Qté | Montant
+        val articles = t.articles.map { a ->
+            Triple(
+                txt(a, "designation"),
+                ((a["quantite"] as? Number)?.toInt() ?: 1).toString(),
+                fmt((a["sousTotal"] as? Number)?.toDouble() ?: 0.0),
+            )
+        }
+        val entetePt = paint(20f)
+        val colQte = maxOf(entetePt.measureText("Qté"), articles.maxOfOrNull { normal.measureText(it.second) } ?: 0f) + 12f
+        val colMontant = maxOf(entetePt.measureText("Montant"), articles.maxOfOrNull { normal.measureText(it.third) } ?: 0f) + 6f
+        lignes.add(LigneArticle("Article", "Qté", "Montant", entetePt, entetePt.textSize * 1.3f))
+        for ((d, q, m) in articles) {
+            lignes.add(LigneArticle(d, q, m, normal, normal.textSize * 1.3f))
+        }
+        lignes.add(Separateur())
+        val totalTxt = "${fmt(t.total)} ${t.devise}"
+        if (total.measureText("TOTAL $totalTxt") <= utile) {
+            lignes.add(Colonnes("TOTAL", totalTxt, total, total.textSize * 1.35f))
+        } else {
+            ajouter("TOTAL", total); ajouter(totalTxt, total)
+        }
+        lignes.add(Separateur())
+        ajouter(piedTicket(t), centre)
+
+        val hauteur = (lignes.sumOf { it.hauteur.toDouble() } + 2 * marge + 10).toInt()
+        val bmp = Bitmap.createBitmap(largeurPx, hauteur, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.WHITE)
+        dessinerFiligrane(bmp)
+
+        var y = marge.toFloat()
+        val trait = Paint().apply { color = Color.BLACK; strokeWidth = 3f }
+        for (l in lignes) {
+            when (l) {
+                is Texte -> {
+                    val x = if (l.pt.textAlign == Paint.Align.CENTER) largeurPx / 2f else marge.toFloat()
+                    c.drawText(l.s, x, y + l.pt.textSize, l.pt)
+                }
+                is Colonnes -> {
+                    c.drawText(l.gauche, marge.toFloat(), y + l.pt.textSize, l.pt)
+                    val d = Paint(l.pt).apply { textAlign = Paint.Align.RIGHT }
+                    c.drawText(l.droite, (largeurPx - marge).toFloat(), y + l.pt.textSize, d)
+                }
+                is Logo -> c.drawBitmap(l.bmp, (largeurPx - l.bmp.width) / 2f, y, null)
+                is LigneArticle -> {
+                    val base = y + l.pt.textSize
+                    val xMontant = (largeurPx - marge).toFloat()
+                    val xQte = xMontant - colMontant - colQte / 2
+                    val placeDesignation = xMontant - colMontant - colQte - marge - 4f
+                    // la désignation est réduite puis, si besoin, raccourcie avec « … » pour tenir sur la ligne
+                    val pd = Paint(l.pt)
+                    while (pd.measureText(l.designation) > placeDesignation && pd.textSize > 17f) pd.textSize -= 1f
+                    var d = l.designation
+                    if (pd.measureText(d) > placeDesignation) {
+                        while (d.isNotEmpty() && pd.measureText("$d…") > placeDesignation) d = d.dropLast(1)
+                        d = "$d…"
+                    }
+                    c.drawText(d, marge.toFloat(), base, pd)
+                    c.drawText(l.qte, xQte, base, Paint(l.pt).apply { textAlign = Paint.Align.CENTER })
+                    c.drawText(l.montant, xMontant, base, Paint(l.pt).apply { textAlign = Paint.Align.RIGHT })
+                }
+                is Separateur -> {
+                    val ym = y + l.hauteur / 2
+                    var x = marge.toFloat()
+                    while (x < largeurPx - marge) { c.drawLine(x, ym, minOf(x + 8f, (largeurPx - marge).toFloat()), ym, trait); x += 14f }
+                }
+            }
+            y += l.hauteur
+        }
+        return bmp
+    }
+
+    /**
+     * Logo de la société converti en noir et blanc tramé (Floyd-Steinberg),
+     * seul rendu fiable sur une imprimante thermique. Hauteur max 140 points.
+     */
+    private fun logoTicket(t: TicketData, largeurMax: Float): Bitmap? {
+        val octets = t.logo ?: return null
+        val src = try { BitmapFactory.decodeByteArray(octets, 0, octets.size) } catch (_: Exception) { null } ?: return null
+        val echelle = minOf(largeurMax * 0.7f / src.width, 140f / src.height, 1f)
+        val w = (src.width * echelle).toInt().coerceAtLeast(1)
+        val h = (src.height * echelle).toInt().coerceAtLeast(1)
+        val img = Bitmap.createScaledBitmap(src, w, h, true)
+        val px = IntArray(w * h)
+        img.getPixels(px, 0, w, 0, 0, w, h)
+        // niveaux de gris (transparence = blanc)
+        val gris = FloatArray(w * h) { i ->
+            val p = px[i]; val a = Color.alpha(p) / 255f
+            val g = 0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)
+            g * a + 255f * (1 - a)
+        }
+        val out = IntArray(w * h)
+        for (y in 0 until h) for (x in 0 until w) {
+            val i = y * w + x
+            val nouveau = if (gris[i] < 128f) 0f else 255f
+            val err = gris[i] - nouveau
+            out[i] = if (nouveau == 0f) Color.BLACK else Color.WHITE
+            if (x + 1 < w) gris[i + 1] += err * 7 / 16
+            if (y + 1 < h) {
+                if (x > 0) gris[i + w - 1] += err * 3 / 16
+                gris[i + w] += err * 5 / 16
+                if (x + 1 < w) gris[i + w + 1] += err * 1 / 16
+            }
+        }
+        return Bitmap.createBitmap(out, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /**
+     * Filigrane « BITOME-FAREL » en diagonale, répété sur toute la hauteur.
+     * Une imprimante thermique n'imprime que du noir : le gris est obtenu par
+     * une trame de points espacés, qui reste lisible sous le texte.
+     */
+    private fun dessinerFiligrane(bmp: Bitmap) {
+        val w = bmp.width; val h = bmp.height
+        val masque = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(masque)
+        val pt = paint(36f, Paint.Align.CENTER)
+        val pas = 200f
+        var cy = pas / 2
+        while (cy < h + pas / 2) {
+            c.save()
+            c.rotate(-30f, w / 2f, cy)
+            c.drawText(filigrane, w / 2f, cy + pt.textSize / 3, pt)
+            c.restore()
+            cy += pas
+        }
+        val px = IntArray(w * h)
+        masque.getPixels(px, 0, w, 0, 0, w, h)
+        val out = IntArray(w * h) { Color.WHITE }
+        for (y in 0 until h) for (x in 0 until w) {
+            val i = y * w + x
+            // trame : 1 point sur 3 en quinconce
+            if (Color.alpha(px[i]) > 128 && (x + 2 * y) % 3 == 0) out[i] = Color.BLACK
+        }
+        bmp.setPixels(out, 0, w, 0, 0, w, h)
+        masque.recycle()
+    }
 
     // ---------- SUNMI ----------
 
@@ -138,30 +415,10 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun imprimerSunmi(p: SunmiPrinterService, t: TicketData) {
-        val sep = "--------------------------------\n" // 32 caractères = largeur 58 mm
         p.printerInit(null)
-
-        val entete = enteteLignes(t)
         p.setAlignment(1, null)
-        p.printTextWithFont("${entete.first()}\n", null, 30f, null)
-        for (l in entete.drop(1)) p.printTextWithFont("$l\n", null, 22f, null)
-
-        p.setAlignment(0, null)
-        p.printTextWithFont("Ticket #${t.numero}\n${t.date}\n$sep", null, 24f, null)
-        for (a in t.articles) {
-            val q = (a["quantite"] as? Number)?.toInt() ?: 1
-            val pu = (a["prix"] as? Number)?.toDouble() ?: 0.0
-            val st = (a["sousTotal"] as? Number)?.toDouble() ?: 0.0
-            p.printTextWithFont("${txt(a, "designation")}\n", null, 24f, null)
-            p.printTextWithFont("  $q x ${fmt(pu)} = ${fmt(st)} ${t.devise}\n", null, 24f, null)
-        }
-        p.printTextWithFont(sep, null, 24f, null)
-
-        p.setAlignment(2, null)
-        p.printTextWithFont("TOTAL : ${fmt(t.total)} ${t.devise}\n", null, 30f, null)
-        p.setAlignment(1, null)
-        p.printTextWithFont("\n${piedTicket(t)}\n", null, 22f, null)
-        p.lineWrap(3, null)
+        p.printBitmap(renderTicket(t), null)
+        p.lineWrap(4, null)
     }
 
     // ---------- Senraise H10 / H10C / H10S / H10P ----------
@@ -204,30 +461,9 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun imprimerSenraise(p: PrinterInterface, t: TicketData) {
-        val sep = "--------------------------------\n"
-        val entete = enteteLignes(t)
         p.setAlignment(1)
-        p.setTextBold(true); p.setTextSize(28f)
-        p.printText("${entete.first()}\n")
-        p.setTextBold(false); p.setTextSize(22f)
-        for (l in entete.drop(1)) p.printText("$l\n")
-
-        p.setAlignment(0); p.setTextSize(24f)
-        p.printText("Ticket #${t.numero}\n${t.date}\n$sep")
-        for (a in t.articles) {
-            val q = (a["quantite"] as? Number)?.toInt() ?: 1
-            val pu = (a["prix"] as? Number)?.toDouble() ?: 0.0
-            val st = (a["sousTotal"] as? Number)?.toDouble() ?: 0.0
-            p.printText("${txt(a, "designation")}\n")
-            p.printText("  $q x ${fmt(pu)} = ${fmt(st)} ${t.devise}\n")
-        }
-        p.printText(sep)
-
-        p.setAlignment(2); p.setTextBold(true); p.setTextSize(28f)
-        p.printText("TOTAL : ${fmt(t.total)} ${t.devise}\n")
-        p.setTextBold(false); p.setAlignment(1); p.setTextSize(22f)
-        p.printText("\n${piedTicket(t)}\n")
-        p.nextLine(3)
+        p.printBitmap(renderTicket(t))
+        p.nextLine(4)
     }
 
     // ---------- Impression Android (secours) ----------
@@ -246,7 +482,10 @@ class MainActivity : FlutterActivity() {
                             "FSS-CALCUL #${t.numero}",
                             adapter,
                             PrintAttributes.Builder()
-                                .setMediaSize(PrintAttributes.MediaSize("FSS58", "Ticket 58 mm", 2283, 11690))
+                                .setMediaSize(
+                                    if (t.largeurMm >= 80) PrintAttributes.MediaSize("FSS80", "Ticket 80 mm", 3150, 11690)
+                                    else PrintAttributes.MediaSize("FSS58", "Ticket 58 mm", 2283, 11690)
+                                )
                                 .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
                                 .build()
                         )
@@ -262,31 +501,13 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun esc(s: String) =
-        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
     private fun buildHtml(t: TicketData): String {
-        val sb = StringBuilder()
-        sb.append(
-            """<html><head><meta charset="utf-8"><style>
-            @page{size:58mm auto;margin:0}body{width:54mm;margin:2mm auto;font-family:monospace;
-            font-size:11px;color:#000}h2{text-align:center;margin:0 0 1mm}p{margin:1mm 0}
-            .c{text-align:center}.r{text-align:right}.line{border-top:1px dashed #000;margin:2mm 0}
-            .total{font-size:15px;font-weight:bold;text-align:right}</style></head><body>"""
-        )
-        val entete = enteteLignes(t)
-        sb.append("<h2>${esc(entete.first())}</h2>")
-        for (l in entete.drop(1)) sb.append("<p class='c'>${esc(l)}</p>")
-        sb.append("<div class='line'></div><p>Ticket #${t.numero}</p><p>${esc(t.date)}</p><div class='line'></div>")
-        for (a in t.articles) {
-            val q = (a["quantite"] as? Number)?.toInt() ?: 1
-            val pu = (a["prix"] as? Number)?.toDouble() ?: 0.0
-            val st = (a["sousTotal"] as? Number)?.toDouble() ?: 0.0
-            sb.append("<p>${esc(txt(a, "designation"))}</p>")
-            sb.append("<p class='r'>$q x ${fmt(pu)} = ${fmt(st)} ${esc(t.devise)}</p>")
-        }
-        sb.append("<div class='line'></div><p class='total'>TOTAL : ${fmt(t.total)} ${esc(t.devise)}</p>")
-        sb.append("<p class='c'>${esc(piedTicket(t))}</p></body></html>")
-        return sb.toString()
+        val out = ByteArrayOutputStream()
+        renderTicket(t).compress(Bitmap.CompressFormat.PNG, 100, out)
+        val b64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        return """<html><head><meta charset="utf-8"><style>
+            @page{size:${t.largeurMm}mm auto;margin:0}body{margin:0;padding:0}
+            img{display:block;width:${if (t.largeurMm >= 80) 72 else 48}mm;margin:2mm auto;image-rendering:pixelated}
+            </style></head><body><img src="data:image/png;base64,$b64"></body></html>"""
     }
 }
