@@ -1,11 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.BLUETOOTH"/>
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <queries>
+        <!-- Service d'impression SUNMI -->
         <package android:name="woyou.aidlservice.jiuiv5" />
+        <!-- Service d'impression Senraise (H10 / H10S / H10P) -->
+        <package android:name="recieptservice.com.recieptservice" />
     </queries>
     <application android:label="FSS-CALCUL" android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">

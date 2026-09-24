@@ -6,20 +6,34 @@ import android.print.PrintAttributes
 import android.print.PrintManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.sunmi.peripheral.printer.InnerPrinterCallback
+import com.sunmi.peripheral.printer.InnerPrinterManager
+import com.sunmi.peripheral.printer.SunmiPrinterService
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import woyou.aidlservice.jiuiv5.IWoyouService
-import woyou.aidlservice.jiuiv5.IWoyouService.Stub
-import woyou.aidlservice.jiuiv5.IWoyouService
-import woyou.aidlservice.jiuiv5.IWoyouService
-import android.content.ComponentName
-import android.content.Intent
-import android.content.ServiceConnection
-import android.os.IBinder
 
+/**
+ * Pont d'impression FSS-CALCUL.
+ *
+ * Ordre : imprimante intégrée SUNMI (bibliothèque officielle com.sunmi:printerlibrary)
+ * puis, si elle est absente ou en échec, système d'impression Android.
+ * Les terminaux Senraise H10 sont gérés côté Dart (plugin senraise_printer).
+ */
 class MainActivity : FlutterActivity() {
     private val channel = "fss_calcul/printer"
+
+    /** Référence gardée pour que la WebView ne soit pas détruite avant la fin de l'impression. */
+    private var printWebView: WebView? = null
+
+    private data class TicketData(
+        val numero: Int,
+        val date: String,
+        val devise: String,
+        val total: Double,
+        val articles: List<Map<*, *>>,
+        val societe: Map<*, *>,
+    )
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -27,17 +41,22 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "deviceInfo" -> {
-                        result.success("${Build.MANUFACTURER} ${Build.MODEL} • Android ${Build.VERSION.RELEASE}")
-                    }
+                    "deviceInfo" -> result.success(
+                        "${Build.MANUFACTURER} ${Build.MODEL} • Android ${Build.VERSION.RELEASE}"
+                    )
                     "printTicket" -> {
-                        val items = call.argument<List<Map<String, Any>>>("items") ?: emptyList()
-                        val ticket = call.argument<Int>("ticket") ?: 0
-                        val total = (call.argument<Number>("total") ?: 0).toDouble()
+                        val t = TicketData(
+                            numero = call.argument<Number>("ticket")?.toInt() ?: 0,
+                            date = call.argument<String>("date") ?: "",
+                            devise = call.argument<String>("devise") ?: "FCFA",
+                            total = call.argument<Number>("total")?.toDouble() ?: 0.0,
+                            articles = call.argument<List<Map<*, *>>>("articles") ?: emptyList(),
+                            societe = call.argument<Map<*, *>>("societe") ?: emptyMap<String, Any>(),
+                        )
                         if (isSunmiDevice()) {
-                            printViaSunmi(items, ticket, total, result)
+                            printViaSunmi(t, result)
                         } else {
-                            printViaAndroidFramework(items, ticket, total, result)
+                            printViaAndroidFramework(t, result)
                         }
                     }
                     else -> result.notImplemented()
@@ -45,110 +64,151 @@ class MainActivity : FlutterActivity() {
             }
     }
 
+    /** Détection sur le fabricant uniquement : le nom du modèle (V2, T1, S2…) ne suffit pas. */
     private fun isSunmiDevice(): Boolean =
         Build.MANUFACTURER.contains("SUNMI", ignoreCase = true) ||
-        Build.BRAND.contains("SUNMI", ignoreCase = true) ||
-        Build.MODEL.contains("V1", ignoreCase = true) ||
-        Build.MODEL.contains("V2", ignoreCase = true) ||
-        Build.MODEL.contains("V3", ignoreCase = true) ||
-        Build.MODEL.contains("P1", ignoreCase = true) ||
-        Build.MODEL.contains("T1", ignoreCase = true) ||
-        Build.MODEL.contains("T2", ignoreCase = true) ||
-        Build.MODEL.contains("D2", ignoreCase = true) ||
-        Build.MODEL.contains("S2", ignoreCase = true)
+            Build.BRAND.contains("SUNMI", ignoreCase = true)
 
-    private fun printViaSunmi(
-        items: List<Map<String, Any>>, ticket: Int, total: Double,
-        result: MethodChannel.Result
-    ) {
-        val intent = Intent().apply {
-            setPackage("woyou.aidlservice.jiuiv5")
-            action = "woyou.aidlservice.jiuiv5.IWoyouService"
+    // ---------- Contenu du ticket (commun aux deux méthodes) ----------
+
+    private fun fmt(n: Double): String = String.format(java.util.Locale.US, "%,.0f", n).replace(',', ' ')
+
+    private fun txt(m: Map<*, *>, key: String): String = (m[key] ?: "").toString().trim()
+
+    private fun enteteLignes(t: TicketData): List<String> {
+        val s = t.societe
+        val nom = txt(s, "nom").ifEmpty { "FSS-CALCUL" }
+        val lignes = mutableListOf(nom)
+        for (k in listOf("adresse", "telephone", "email", "siteWeb")) {
+            txt(s, k).takeIf { it.isNotEmpty() }?.let { lignes.add(it) }
         }
-        val connection = object : ServiceConnection {
-            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+        txt(s, "identifiantFiscal").takeIf { it.isNotEmpty() }?.let { lignes.add("NIF : $it") }
+        txt(s, "registreCommerce").takeIf { it.isNotEmpty() }?.let { lignes.add("RCCM : $it") }
+        return lignes
+    }
+
+    private fun piedTicket(t: TicketData): String =
+        txt(t.societe, "piedTicket").ifEmpty { "Merci pour votre confiance" }
+
+    // ---------- SUNMI ----------
+
+    private fun printViaSunmi(t: TicketData, result: MethodChannel.Result) {
+        var repondu = false
+        fun repondre(action: () -> Unit) {
+            if (!repondu) { repondu = true; action() }
+        }
+
+        val callback = object : InnerPrinterCallback() {
+            override fun onConnected(service: SunmiPrinterService) {
                 try {
-                    val service = IWoyouService.Stub.asInterface(binder)
-                    service.setAlignment(1, null)
-                    service.printText("FSS-CALCUL\\n", null)
-                    service.printText("BITOME MEYEH\\n", null)
-                    service.setAlignment(0, null)
-                    service.printText("Ticket #$ticket\\n", null)
-                    service.printText("------------------------------\\n", null)
-                    for (x in items) {
-                        if (x["type"] == "article") {
-                            val d = (x["designation"] ?: "").toString()
-                            val q = (x["quantite"] as? Number)?.toInt() ?: 1
-                            val st = (x["sousTotal"] as? Number)?.toDouble() ?: 0.0
-                            val pu = if (q == 0) 0.0 else st / q
-                            service.printText("$d\\n$q x ${"%.0f".format(pu)} = ${"%.0f".format(st)} FCFA\\n", null)
-                        }
+                    if (!InnerPrinterManager.getInstance().hasPrinter(service)) {
+                        throw IllegalStateException("Aucune imprimante intégrée sur ce terminal SUNMI.")
                     }
-                    service.printText("------------------------------\\n", null)
-                    service.setAlignment(2, null)
-                    service.printText("TOTAL: ${"%.0f".format(total)} FCFA\\n\\n", null)
-                    service.setAlignment(1, null)
-                    service.printText("Merci pour votre confiance\\n\\n\\n", null)
-                    unbindService(this)
-                    result.success("Ticket imprimé directement sur l'imprimante SUNMI.")
+                    imprimerSunmi(service, t)
+                    repondre { result.success("Ticket imprimé sur l'imprimante SUNMI.") }
                 } catch (e: Exception) {
-                    try { unbindService(this) } catch (_: Exception) {}
-                    result.error("SUNMI_PRINT", e.message, null)
+                    // Échec SUNMI : on bascule sur l'impression Android
+                    repondre { printViaAndroidFramework(t, result) }
+                } finally {
+                    try { InnerPrinterManager.getInstance().unBindService(this@MainActivity, this) } catch (_: Exception) {}
                 }
             }
-            override fun onServiceDisconnected(name: ComponentName?) {}
+
+            override fun onDisconnected() {}
         }
+
         try {
-            val ok = bindService(intent, connection, Context.BIND_AUTO_CREATE)
-            if (!ok) result.error("SUNMI_BIND", "Service d'impression SUNMI indisponible.", null)
+            val ok = InnerPrinterManager.getInstance().bindService(this, callback)
+            if (!ok) repondre { printViaAndroidFramework(t, result) }
         } catch (e: Exception) {
-            result.error("SUNMI_BIND", e.message, null)
+            repondre { printViaAndroidFramework(t, result) }
         }
     }
 
-    private fun printViaAndroidFramework(
-        items: List<Map<String, Any>>, ticket: Int, total: Double,
-        result: MethodChannel.Result
-    ) {
-        val web = WebView(this)
-        web.settings.javaScriptEnabled = false
-        web.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                val pm = getSystemService(Context.PRINT_SERVICE) as PrintManager
-                val adapter = web.createPrintDocumentAdapter("FSS-CALCUL-Ticket-$ticket")
-                pm.print(
-                    "FSS-CALCUL #$ticket",
-                    adapter,
-                    PrintAttributes.Builder()
-                        .setMediaSize(PrintAttributes.MediaSize.NA_INDEX_3X5)
-                        .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
-                        .build()
-                )
-                result.success("Ticket envoyé au système d’impression Android.")
+    private fun imprimerSunmi(p: SunmiPrinterService, t: TicketData) {
+        val sep = "--------------------------------\n" // 32 caractères = largeur 58 mm
+        p.printerInit(null)
+
+        val entete = enteteLignes(t)
+        p.setAlignment(1, null)
+        p.printTextWithFont("${entete.first()}\n", null, 30f, null)
+        for (l in entete.drop(1)) p.printTextWithFont("$l\n", null, 22f, null)
+
+        p.setAlignment(0, null)
+        p.printTextWithFont("Ticket #${t.numero}\n${t.date}\n$sep", null, 24f, null)
+        for (a in t.articles) {
+            val q = (a["quantite"] as? Number)?.toInt() ?: 1
+            val pu = (a["prix"] as? Number)?.toDouble() ?: 0.0
+            val st = (a["sousTotal"] as? Number)?.toDouble() ?: 0.0
+            p.printTextWithFont("${txt(a, "designation")}\n", null, 24f, null)
+            p.printTextWithFont("  $q x ${fmt(pu)} = ${fmt(st)} ${t.devise}\n", null, 24f, null)
+        }
+        p.printTextWithFont(sep, null, 24f, null)
+
+        p.setAlignment(2, null)
+        p.printTextWithFont("TOTAL : ${fmt(t.total)} ${t.devise}\n", null, 30f, null)
+        p.setAlignment(1, null)
+        p.printTextWithFont("\n${piedTicket(t)}\n", null, 22f, null)
+        p.lineWrap(3, null)
+    }
+
+    // ---------- Impression Android (secours) ----------
+
+    private fun printViaAndroidFramework(t: TicketData, result: MethodChannel.Result) {
+        try {
+            val web = WebView(this)
+            printWebView = web
+            web.settings.javaScriptEnabled = false
+            web.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    try {
+                        val pm = getSystemService(Context.PRINT_SERVICE) as PrintManager
+                        val adapter = web.createPrintDocumentAdapter("FSS-CALCUL-Ticket-${t.numero}")
+                        pm.print(
+                            "FSS-CALCUL #${t.numero}",
+                            adapter,
+                            PrintAttributes.Builder()
+                                .setMediaSize(PrintAttributes.MediaSize("FSS58", "Ticket 58 mm", 2283, 11690))
+                                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                                .build()
+                        )
+                        result.success("Ticket envoyé au système d'impression Android.")
+                    } catch (e: Exception) {
+                        result.error("ANDROID_PRINT", e.message, null)
+                    }
+                }
             }
+            web.loadDataWithBaseURL(null, buildHtml(t), "text/html", "UTF-8", null)
+        } catch (e: Exception) {
+            result.error("ANDROID_PRINT", e.message, null)
         }
-        web.loadDataWithBaseURL(null, buildHtml(items, ticket, total), "text/html", "UTF-8", null)
     }
 
-    private fun buildHtml(items: List<Map<String, Any>>, ticket: Int, total: Double): String {
+    private fun esc(s: String) =
+        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    private fun buildHtml(t: TicketData): String {
         val sb = StringBuilder()
-        sb.append("""<html><head><meta name="viewport" content="width=58mm"><style>
-        @page{size:58mm auto;margin:0}body{width:54mm;margin:2mm auto;font-family:monospace;
-        font-size:11px;color:#000}h2{text-align:center;margin:0 0 2mm}p{margin:1mm 0}
-        .c{text-align:center}.r{text-align:right}.line{border-top:1px dashed #000;margin:2mm 0}
-        .total{font-size:16px;font-weight:bold}</style></head><body>""")
-        sb.append("<h2>FSS-CALCUL</h2><p class='c'>BITOME MEYEH</p>")
-        sb.append("<p>Ticket #$ticket</p><div class='line'></div>")
-        for (x in items) {
-            if (x["type"] == "article") {
-                val d = (x["designation"] ?: "").toString().replace("&","&amp;").replace("<","&lt;")
-                val q = x["quantite"] ?: 1
-                val st = (x["sousTotal"] as? Number)?.toDouble() ?: 0.0
-                sb.append("<p>$d</p><p>$q x ${"%.0f".format(st / (q as Int))} = ${"%.0f".format(st)} FCFA</p>")
-            }
+        sb.append(
+            """<html><head><meta charset="utf-8"><style>
+            @page{size:58mm auto;margin:0}body{width:54mm;margin:2mm auto;font-family:monospace;
+            font-size:11px;color:#000}h2{text-align:center;margin:0 0 1mm}p{margin:1mm 0}
+            .c{text-align:center}.r{text-align:right}.line{border-top:1px dashed #000;margin:2mm 0}
+            .total{font-size:15px;font-weight:bold;text-align:right}</style></head><body>"""
+        )
+        val entete = enteteLignes(t)
+        sb.append("<h2>${esc(entete.first())}</h2>")
+        for (l in entete.drop(1)) sb.append("<p class='c'>${esc(l)}</p>")
+        sb.append("<div class='line'></div><p>Ticket #${t.numero}</p><p>${esc(t.date)}</p><div class='line'></div>")
+        for (a in t.articles) {
+            val q = (a["quantite"] as? Number)?.toInt() ?: 1
+            val pu = (a["prix"] as? Number)?.toDouble() ?: 0.0
+            val st = (a["sousTotal"] as? Number)?.toDouble() ?: 0.0
+            sb.append("<p>${esc(txt(a, "designation"))}</p>")
+            sb.append("<p class='r'>$q x ${fmt(pu)} = ${fmt(st)} ${esc(t.devise)}</p>")
         }
-        sb.append("<div class='line'></div><p class='total'>TOTAL: ${"%.0f".format(total)} FCFA</p>")
-        sb.append("<p class='c'>Merci pour votre confiance</p></body></html>")
+        sb.append("<div class='line'></div><p class='total'>TOTAL : ${fmt(t.total)} ${esc(t.devise)}</p>")
+        sb.append("<p class='c'>${esc(piedTicket(t))}</p></body></html>")
         return sb.toString()
     }
 }
