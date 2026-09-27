@@ -3,8 +3,6 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'pvit/fss_pvit_dialog.dart';
-import 'pvit/fss_pvit_service.dart';
 
 void main() => runApp(const FssCalculApp());
 
@@ -76,30 +74,15 @@ class Article {
   double get sousTotal=>prix*quantite;
 }
 class Ticket {
-  Ticket(this.numero,this.date,this.articles,this.total,{this.modePaiement='ESPECES',this.paiement});
+  Ticket(this.numero,this.date,this.articles,this.total);
   final int numero; final DateTime date; final List<Article> articles; final double total;
-  /// ESPECES ou MOBILE_MONEY
-  final String modePaiement;
-  /// Détails du paiement Mobile Money (opérateur, téléphone, références PVIT / FSS).
-  final Map<String,dynamic>? paiement;
-  bool get mobileMoney=>modePaiement=='MOBILE_MONEY';
-  /// Lignes imprimées sur le ticket pour un paiement Mobile Money.
-  List<String> lignesPaiement(){
-    final p=paiement; if(!mobileMoney||p==null)return const [];
-    final tel=(p['telephone']??'').toString();
-    return ['Payé par ${FssPvit.nomOperateur((p['operateur']??'').toString())}',
-      'Tél : ${FssPvit.telMasque(tel)}','Réf. PVIT : ${p['transactionId']??'-'}'];
-  }
   Map<String,dynamic> toJson()=>{'numero':numero,'date':date.toIso8601String(),'total':total,
-    'modePaiement':modePaiement,if(paiement!=null)'paiement':paiement,
     'articles':articles.map((a)=>{'designation':a.designation,'prix':a.prix,'quantite':a.quantite}).toList()};
   factory Ticket.fromJson(Map<String,dynamic> j)=>Ticket(
     (j['numero'] as num).toInt(),DateTime.tryParse(j['date']??'')??DateTime.now(),
     (j['articles'] as List? ?? const []).map((e)=>Article(e['designation']??'',
       (e['prix'] as num?)?.toDouble()??0.0,(e['quantite'] as num?)?.toInt()??1)).toList(),
-    (j['total'] as num?)?.toDouble()??0.0,
-    modePaiement:(j['modePaiement']??'ESPECES').toString(),
-    paiement:j['paiement'] is Map?Map<String,dynamic>.from(j['paiement']):null);
+    (j['total'] as num?)?.toDouble()??0.0);
 }
 
 /// Devises : on mémorise le code ISO, on affiche le symbole.
@@ -126,11 +109,7 @@ class PrinterService {
     'ticket':ticket.numero,'date':_date(ticket.date),'devise':devise,'total':ticket.total,
     'articles':ticket.articles.map((a)=>{'designation':a.designation,'quantite':a.quantite,
       'prix':a.prix,'sousTotal':a.sousTotal}).toList(),
-    // Paiement Mobile Money : mentions ajoutées au-dessus du pied de ticket
-    // (le rendu natif gère déjà les retours à la ligne, aucun changement côté Android).
-    'societe':ticket.lignesPaiement().isEmpty?company.toJson():{...company.toJson(),
-      'piedTicket':[...ticket.lignesPaiement(),company.piedTicket].join('\n')},
-    'largeur':largeur,'logo':company.logoOctets,
+    'societe':company.toJson(),'largeur':largeur,'logo':company.logoOctets,
   };
 
   /// Image du ticket telle qu'elle sera imprimée ([largeur] = 58 ou 80 mm).
@@ -181,9 +160,6 @@ class _CaissePageState extends State<CaissePage> {
   Map<String,dynamic> licence=const {};
   AppCompany societe=AppCompany();
   String devise='XAF'; int page=0, numeroTicket=1, largeurTicket=58;
-  /// Paiement Mobile Money (PVIT) : adresse du relais FSS-PAY et clé de ce terminal.
-  String pvitRelais='', pvitCle='';
-  FssPvit get pvit=>FssPvit(relais:pvitRelais,cle:pvitCle);
   String get symbole=>symboleDevise(devise);
   double get total=>articles.fold(0,(s,a)=>s+a.sousTotal);
 
@@ -194,7 +170,6 @@ class _CaissePageState extends State<CaissePage> {
     devise=devisesDisponibles.containsKey(d)?d:'XAF'; // ancien réglage « FCFA » -> XAF
     numeroTicket=p.getInt('numeroTicket')??1;
     largeurTicket=p.getInt('largeurTicket')==80?80:58;
-    pvitRelais=p.getString('pvitRelais')??''; pvitCle=p.getString('pvitCle')??'';
     final ts=p.getString('tickets');
     if(ts!=null){try{tickets..clear()..addAll((jsonDecode(ts) as List).map((e)=>Ticket.fromJson(Map<String,dynamic>.from(e))));}catch(_){}}
     final cs=p.getString('societe'); if(cs!=null){try{societe=AppCompany.fromJson(jsonDecode(cs));}catch(_){}} 
@@ -349,76 +324,12 @@ class _CaissePageState extends State<CaissePage> {
       const SnackBar(content:Text('Vérifiez la désignation, le prix et la quantité.')));return;}
     setState(()=>articles.add(Article(d,p,q))); designation.clear(); prix.clear(); quantite.text='1';
   }
-  Future<void> enregistrerEtImprimer({String mode='ESPECES',Map<String,dynamic>? paiement}) async {
+  Future<void> enregistrerEtImprimer() async {
     if(articles.isEmpty)return;
-    final t=Ticket(numeroTicket++,DateTime.now(),articles.map((a)=>Article(a.designation,a.prix,a.quantite)).toList(),total,
-      modePaiement:mode,paiement:paiement);
+    final t=Ticket(numeroTicket++,DateTime.now(),articles.map((a)=>Article(a.designation,a.prix,a.quantite)).toList(),total);
     setState((){tickets.insert(0,t);articles.clear();});
     await _saveTickets();
     await apercuEtImpression(t);
-  }
-
-  /// Encaissement Mobile Money (Airtel Money / Moov Money via PVIT).
-  /// Le ticket n'est enregistré qu'une fois le paiement confirmé par PVIT.
-  Future<void> encaisserMobileMoney() async {
-    if(articles.isEmpty)return;
-    if(devise!='XAF'&&devise!='XOF'){
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content:Text('Le Mobile Money ne fonctionne qu’en Franc CFA (XAF).')));
-      return;
-    }
-    if(!pvit.estConfigure){
-      final ok=await _pvitDialog();
-      if(ok!=true||!pvit.estConfigure||!mounted)return;
-    }
-    final montant=total.round();
-    final r=await FssPvitDialog.afficher(context,service:pvit,montant:montant,
-      ticket:'#$numeroTicket',libelle:'${articles.length} article(s)',caissier:courant?.nom);
-    if(!r.paye||r.paiement==null||!mounted)return;
-    final p=r.paiement!;
-    // Le montant confirmé doit correspondre au panier (sécurité si le panier a changé entre-temps)
-    if(p.montant!=total.round()){
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(
-        'Attention : ${money(p.montant.toDouble())} reçus pour un panier de ${money(total)}. Vérifiez avant de valider.')));
-    }
-    await enregistrerEtImprimer(mode:'MOBILE_MONEY',paiement:{'operateur':p.operateur,'telephone':p.telephone,
-      'transactionId':p.transactionId,'reference':p.reference,'montant':p.montant});
-  }
-
-  /// Réglages du relais FSS-PAY (adresse + clé du terminal).
-  Future<bool?> _pvitDialog() async {
-    final r=TextEditingController(text:pvitRelais), c=TextEditingController(text:pvitCle);
-    String? info; bool infoOk=false; bool test=false;
-    return showDialog<bool>(context:context,builder:(ctx)=>StatefulBuilder(builder:(ctx,setD)=>AlertDialog(
-      title:const Text('Paiement Mobile Money'),
-      content:SizedBox(width:520,child:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[
-        const Text('Airtel Money et Moov Money via PVIT. Renseignez l’adresse du relais FSS-PAY et la clé de ce terminal '
-          'fournies par FALLSERVICES&SOLUTIONS INFO.'),
-        const SizedBox(height:8),
-        TextField(controller:r,keyboardType:TextInputType.url,
-          decoration:const InputDecoration(labelText:'Adresse du relais',hintText:'https://pay.mondomaine.com',prefixIcon:Icon(Icons.cloud))),
-        TextField(controller:c,autocorrect:false,
-          decoration:const InputDecoration(labelText:'Clé du terminal',prefixIcon:Icon(Icons.vpn_key))),
-        if(info!=null)Padding(padding:const EdgeInsets.only(top:10),child:Text(info!,
-          style:TextStyle(fontWeight:FontWeight.bold,color:infoOk?Colors.green.shade800:const Color(0xFFD90429)))),
-      ]))),
-      actions:[
-        TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Annuler')),
-        TextButton(onPressed:test?null:()async{
-          setD((){test=true;info='Test en cours…';infoOk=true;});
-          try{
-            await FssPvit(relais:r.text.trim(),cle:c.text.trim()).tester();
-            setD((){info='Connexion réussie ✓';infoOk=true;});
-          }on PvitErreur catch(e){setD((){info=e.message;infoOk=false;});}
-          setD(()=>test=false);
-        },child:const Text('Tester')),
-        FilledButton(onPressed:()async{
-          final p=await SharedPreferences.getInstance();
-          pvitRelais=r.text.trim().replaceAll(RegExp(r'/+$'),''); pvitCle=c.text.trim();
-          await p.setString('pvitRelais',pvitRelais); await p.setString('pvitCle',pvitCle);
-          if(mounted)setState((){});
-          if(ctx.mounted)Navigator.pop(ctx,true);
-        },child:const Text('Enregistrer')),
-      ])));
   }
 
   /// Aperçu avant impression avec choix du papier 58 mm / 80 mm.
@@ -480,30 +391,16 @@ class _CaissePageState extends State<CaissePage> {
         subtitle:Text('${a.quantite} × ${money(a.prix)}'),trailing:Row(mainAxisSize:MainAxisSize.min,children:[
           Text(money(a.sousTotal)),IconButton(onPressed:()=>setState(()=>articles.removeAt(i)),
             icon:const Icon(Icons.delete,color:Color(0xFFD90429))) ]));})),
-    Container(padding:const EdgeInsets.fromLTRB(16,10,16,14),color:const Color(0xFF0037D6),child:Column(children:[
-      Row(children:[
-        const Text('TOTAL',style:TextStyle(color:Colors.white,fontSize:20,fontWeight:FontWeight.bold)),const Spacer(),
-        Text(money(total),style:const TextStyle(color:Colors.white,fontSize:22,fontWeight:FontWeight.bold))]),
-      const SizedBox(height:8),
-      Row(children:[
-        Expanded(child:FilledButton.icon(style:FilledButton.styleFrom(backgroundColor:const Color(0xFFE30613),
-            padding:const EdgeInsets.symmetric(vertical:14)),
-          onPressed:articles.isEmpty?null:()=>enregistrerEtImprimer(),icon:const Icon(Icons.print),
-          label:const FittedBox(child:Text('Espèces + imprimer')))),
-        const SizedBox(width:8),
-        Expanded(child:FilledButton.icon(style:FilledButton.styleFrom(backgroundColor:const Color(0xFF1F7A3A),
-            padding:const EdgeInsets.symmetric(vertical:14)),
-          onPressed:articles.isEmpty?null:encaisserMobileMoney,icon:const Icon(Icons.phone_android),
-          label:const FittedBox(child:Text('Mobile Money')))),
-      ]),
-    ]))
+    Container(padding:const EdgeInsets.fromLTRB(16,10,16,18),color:const Color(0xFF0037D6),child:Row(children:[
+      const Text('TOTAL',style:TextStyle(color:Colors.white,fontSize:20,fontWeight:FontWeight.bold)),const Spacer(),
+      Text(money(total),style:const TextStyle(color:Colors.white,fontSize:22,fontWeight:FontWeight.bold)),const SizedBox(width:10),
+      FilledButton.icon(style:FilledButton.styleFrom(backgroundColor:const Color(0xFFE30613)),
+        onPressed:articles.isEmpty?null:enregistrerEtImprimer,icon:const Icon(Icons.print),label:const Text('Valider + imprimer'))]))
   ]);
 
   Widget historique()=>ListView.builder(padding:const EdgeInsets.all(12),itemCount:tickets.length,itemBuilder:(_,i){
     final t=tickets[i];return Card(child:ListTile(title:Text('Ticket #${t.numero}'),
-      leading:t.mobileMoney?const Icon(Icons.phone_android,color:Color(0xFF1F7A3A)):const Icon(Icons.payments_outlined),
-      subtitle:Text('${t.articles.length} article(s) • ${money(t.total)}'
-        '${t.mobileMoney?' • ${FssPvit.nomOperateur((t.paiement?['operateur']??'').toString())}':' • Espèces'}'),
+      subtitle:Text('${t.articles.length} article(s) • ${money(t.total)}'),
       trailing:IconButton(icon:const Icon(Icons.print),onPressed:()=>apercuEtImpression(t))));});
 
   Future<void> _companyDialog() async {
@@ -615,10 +512,6 @@ class _CaissePageState extends State<CaissePage> {
         content:SizedBox(width:double.maxFinite,child:SingleChildScrollView(
           child:formulaireActivation(apres:()=>Navigator.pop(ctx)))),
         actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Fermer'))])))),
-    Card(child:ListTile(leading:Icon(Icons.phone_android,color:pvit.estConfigure?const Color(0xFF1F7A3A):null),
-      title:const Text('Paiement Mobile Money (PVIT)'),
-      subtitle:Text(pvit.estConfigure?'Airtel Money / Moov Money activé • $pvitRelais':'Non configuré — Airtel Money / Moov Money'),
-      trailing:const Icon(Icons.chevron_right),onTap:_pvitDialog)),
     Card(child:ListTile(leading:const Icon(Icons.currency_exchange),title:const Text('Devise'),
       subtitle:Text(libellesDevises[devise]??devise),trailing:DropdownButton<String>(value:devise,
         items:devisesDisponibles.keys.map((d)=>DropdownMenuItem(value:d,child:Text(d))).toList(),
